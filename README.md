@@ -1,4 +1,4 @@
-# Flickr Photo Draft Assistant
+# Flickr Metadata Assistant
 
 Standalone Chrome extension for drafting Flickr photo metadata directly in the browser.
 Published by KodeXpo.
