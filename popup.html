@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flickr Metadata Assistant</title>
+  <link rel="icon" type="image/svg+xml" href="assets/icons/favicon-simple.svg">
+  <link rel="shortcut icon" href="assets/icons/favicon-simple.svg">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="hero-brand">
+        <img class="brand-mark" src="assets/icons/icon128.png" alt="" aria-hidden="true">
+        <div>
+        <p class="eyebrow">Browser extension</p>
+        <h1>Flickr Metadata Assistant</h1>
+        </div>
+      </div>
+      <button id="optionsBtn" class="ghost" type="button">Options</button>
+    </section>
+
+    <section class="panel status-panel">
+      <div class="status-row">
+        <span class="dot" id="connectionDot"></span>
+        <span id="statusText">Loading current tab...</span>
+      </div>
+      <p id="contextSummary" class="muted"></p>
+      <p id="authSummary" class="muted"></p>
+    </section>
+
+    <section class="panel form-panel">
+      <label>
+        <span>Title</span>
+        <input id="titleInput" type="text" placeholder="Draft title">
+      </label>
+      <label>
+        <span>Description</span>
+        <textarea id="descriptionInput" rows="4" placeholder="Draft description"></textarea>
+      </label>
+      <label>
+        <span>Tags</span>
+        <textarea id="tagsInput" rows="2" placeholder="comma separated tags"></textarea>
+      </label>
+      <label>
+        <span>Notes</span>
+        <textarea id="notesInput" rows="2" readonly></textarea>
+      </label>
+      <label class="checkbox-row">
+        <input id="removeLocationInput" type="checkbox">
+        <span>Remove location before publishing</span>
+      </label>
+      <div class="meta-grid">
+        <div>
+          <span class="meta-label">Source</span>
+          <strong id="sourceText">-</strong>
+        </div>
+        <div>
+          <span class="meta-label">Confidence</span>
+          <strong id="confidenceText">-</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button id="refreshBtn" type="button">Load page</button>
+      <button id="draftBtn" type="button" class="primary">Generate draft</button>
+      <button id="copyBtn" type="button">Copy JSON</button>
+      <button id="publishBtn" type="button" class="primary">Publish to Flickr</button>
+    </section>
+
+    <p id="footerText" class="footer muted"></p>
+  </main>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

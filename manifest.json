@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Flickr Metadata Assistant",
+  "version": "0.1.0",
+  "description": "Standalone Flickr draft assistant with local and cloud captioning options.",
+  "permissions": [
+    "identity",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://api.flickr.com/*",
+    "https://*.staticflickr.com/*",
+    "https://live.staticflickr.com/*",
+    "https://api.openai.com/*",
+    "https://api.deepseek.com/*",
+    "http://localhost:11434/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    },
+    "default_popup": "popup.html",
+    "default_title": "Flickr Draft Assistant"
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.flickr.com/photos/*"
+      ],
+      "js": [
+        "common.js",
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

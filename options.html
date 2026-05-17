@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flickr Metadata Assistant Options</title>
+  <link rel="icon" type="image/svg+xml" href="assets/icons/favicon-simple.svg">
+  <link rel="shortcut icon" href="assets/icons/favicon-simple.svg">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-brand">
+        <img class="brand-mark" src="assets/icons/icon128.png" alt="" aria-hidden="true">
+        <div>
+        <p class="eyebrow">Browser extension</p>
+        <h1>Settings</h1>
+        <p class="lede">Choose a draft provider and store API credentials locally in Chrome.</p>
+        </div>
+      </div>
+      <button id="backBtn" class="ghost" type="button">Back to panel</button>
+    </section>
+
+    <section class="panel">
+      <form id="settingsForm" class="form-grid">
+        <label>
+          <span>Flickr API key</span>
+          <input id="flickrApiKey" type="text" placeholder="Your Flickr API key">
+        </label>
+
+        <label>
+          <span>Flickr API secret</span>
+          <input id="flickrApiSecret" type="password" placeholder="Your Flickr API secret">
+        </label>
+
+        <label>
+          <span>Draft AI provider</span>
+          <select id="provider">
+            <option value="auto">auto</option>
+            <option value="local">local</option>
+            <option value="openai">openai</option>
+            <option value="deepseek">deepseek</option>
+            <option value="heuristic">heuristic</option>
+          </select>
+        </label>
+
+        <label class="checkbox-row">
+          <input id="preferLocalFirst" type="checkbox">
+          <span>Prefer local vision first when provider is auto</span>
+        </label>
+
+        <label>
+          <span>OpenAI API key</span>
+          <input id="openaiApiKey" type="password" placeholder="sk-...">
+        </label>
+
+        <label>
+          <span>OpenAI model</span>
+          <input id="openaiModel" type="text" placeholder="gpt-4.1-mini">
+        </label>
+
+        <label>
+          <span>DeepSeek API key</span>
+          <input id="deepseekApiKey" type="password" placeholder="sk-...">
+        </label>
+
+        <label>
+          <span>DeepSeek model</span>
+          <input id="deepseekModel" type="text" placeholder="deepseek-v4-flash">
+        </label>
+
+        <label>
+          <span>Ollama base URL</span>
+          <input id="ollamaBaseUrl" type="text" placeholder="http://localhost:11434">
+        </label>
+
+        <label>
+          <span>Ollama model</span>
+          <input id="ollamaModel" type="text" placeholder="llama3.2-vision">
+        </label>
+      </form>
+    </section>
+
+    <section class="panel auth-panel">
+      <div class="auth-copy">
+        <strong>Flickr connection</strong>
+        <p id="authStatus" class="status">Not connected.</p>
+      </div>
+      <div class="auth-actions">
+        <button id="disconnectBtn" type="button">Disconnect</button>
+        <button id="connectBtn" type="button" class="primary">Connect Flickr</button>
+      </div>
+    </section>
+
+    <section class="panel callback-panel">
+      <strong>OAuth callback URL</strong>
+      <p class="status">Register this URL in the Flickr App Garden if Flickr asks you for a callback target.</p>
+      <input id="redirectUrl" type="text" readonly>
+    </section>
+
+    <section class="panel legal-panel">
+      <strong>About / Legal</strong>
+      <p class="status">Publisher: KodeXpo.</p>
+      <p class="status">This extension processes Flickr page data to draft, review, and apply metadata only for the user's own Flickr photos and other content they own or control. Depending on the selected provider, photo text and image data may be sent to OpenAI, DeepSeek, or a local Ollama instance to generate draft metadata. The extension handles authentication information such as Flickr OAuth tokens and account identifiers, website content such as Flickr page titles, descriptions, tags, and image data, and locally stored draft metadata and settings. It stores this information locally in Chrome on the user's device. It does not sell user data or use it for advertising.</p>
+      <p class="status">This product uses the Flickr API but is not endorsed or certified by SmugMug, Inc.</p>
+      <p class="status">This extension is a drafting and publishing aid. It does not guarantee the accuracy, legality, or suitability of generated metadata. You are responsible for reviewing all titles, descriptions, tags, visibility changes, and publication actions before applying them.</p>
+      <p class="status">This extension is provided “as is” and “as available.” We make no warranty that generated or edited metadata is accurate, complete, suitable, or legally safe. You are solely responsible for reviewing all titles, descriptions, tags, visibility changes, and publication actions before applying them. Use this extension only for photos and content you own or control. We are not responsible for errors, data loss, or issues caused by Flickr or third-party AI providers.</p>
+      <a class="policy-link" href="privacy-policy.html" target="_blank" rel="noopener noreferrer">Read privacy policy</a>
+    </section>
+
+    <section class="panel backup-panel">
+      <strong>Backup / Restore</strong>
+      <p class="status">Export your Flickr connection, stored API credentials, provider settings, and saved drafts to a JSON file. Import that file later to restore the extension after reinstalling or clearing Chrome data.</p>
+      <div class="backup-actions">
+        <button id="exportBtn" type="button">Export backup</button>
+        <button id="importBtn" type="button" class="primary">Import backup</button>
+      </div>
+      <input id="importFile" type="file" accept="application/json,.json" hidden>
+    </section>
+
+    <section class="actions">
+      <button id="resetBtn" type="button">Reset defaults</button>
+      <button id="saveBtn" type="button" class="primary">Save settings</button>
+    </section>
+
+    <p id="statusText" class="status"></p>
+  </main>
+  <script src="common.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
