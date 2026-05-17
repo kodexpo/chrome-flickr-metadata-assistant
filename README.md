@@ -36,6 +36,7 @@ If you want a reinstall-safe copy, use the Options page backup tools to export a
 If Flickr asks for a callback URL, use the one shown on the options page. It is generated from `chrome.identity.getRedirectURL('flickr')`.
 
 The options page also includes an About / Legal section and a privacy policy link in `privacy-policy.html`.
+For a GitHub-readable version, see [`privacy-policy.md`](privacy-policy.md).
 
 The extension is intended for the user's own Flickr photos and other content they own or control.
 It handles authentication information such as Flickr OAuth tokens and account identifiers, plus website content such as Flickr page titles, descriptions, tags, and image data, all stored locally in Chrome unless sent to an enabled AI provider for drafting.
