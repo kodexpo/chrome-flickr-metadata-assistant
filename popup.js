@@ -7,6 +7,9 @@
     draft: null,
     settings: null,
     auth: null,
+    groups: null,
+    showAllEligible: false,
+    groupDialogMode: 'join',
   };
 
   const elements = {};
@@ -37,6 +40,21 @@
     elements.publishBtn = document.getElementById('publishBtn');
     elements.copyBtn = document.getElementById('copyBtn');
     elements.optionsBtn = document.getElementById('optionsBtn');
+    elements.groupsRefreshBtn = document.getElementById('groupsRefreshBtn');
+    elements.groupsToggleEligibleBtn = document.getElementById('groupsToggleEligibleBtn');
+    elements.groupsSummary = document.getElementById('groupsSummary');
+    elements.groupsFeedback = document.getElementById('groupsFeedback');
+    elements.groupsList = document.getElementById('groupsList');
+    elements.groupJoinDialog = document.getElementById('groupJoinDialog');
+    elements.groupJoinTitle = document.getElementById('groupJoinTitle');
+    elements.groupJoinDescription = document.getElementById('groupJoinDescription');
+    elements.groupJoinRulesWrap = document.getElementById('groupJoinRulesWrap');
+    elements.groupJoinRules = document.getElementById('groupJoinRules');
+    elements.groupJoinNotice = document.getElementById('groupJoinNotice');
+    elements.groupInvitationMessageWrap = document.getElementById('groupInvitationMessageWrap');
+    elements.groupInvitationMessage = document.getElementById('groupInvitationMessage');
+    elements.groupJoinCancelBtn = document.getElementById('groupJoinCancelBtn');
+    elements.groupJoinConfirmBtn = document.getElementById('groupJoinConfirmBtn');
   }
 
   function bindEvents() {
@@ -45,6 +63,18 @@
     elements.publishBtn.addEventListener('click', () => publishDraft());
     elements.copyBtn.addEventListener('click', () => copyDraft());
     elements.optionsBtn.addEventListener('click', openOptions);
+    elements.groupsRefreshBtn.addEventListener('click', loadGroups);
+    elements.groupsToggleEligibleBtn.addEventListener('click', toggleEligibleGroups);
+    elements.groupsList.addEventListener('click', handleGroupAction);
+    elements.groupJoinCancelBtn.addEventListener('click', () => elements.groupJoinDialog.close('cancel'));
+    elements.groupJoinConfirmBtn.addEventListener('click', () => {
+      if (state.groupDialogMode === 'invitation' && !elements.groupInvitationMessage.value.trim()) {
+        elements.groupJoinNotice.textContent = 'Write a short message for the group administrators.';
+        elements.groupInvitationMessage.focus();
+        return;
+      }
+      elements.groupJoinDialog.close('confirm');
+    });
 
     elements.titleInput.addEventListener('input', syncDraftFromForm);
     elements.descriptionInput.addEventListener('input', syncDraftFromForm);
@@ -82,10 +112,15 @@
       elements.draftBtn.disabled = !state.context.isFlickrPage || !state.context.canEditPhoto;
       elements.publishBtn.disabled = true;
       elements.contextSummary.textContent = summarizeContext(state.context);
+      renderGroups(null);
 
       if (!state.context.canEditPhoto) {
         renderDraft(null, true);
-        setFooter('This photo is not editable by the current account.');
+        setFooter(
+          state.auth && !state.auth.connected
+            ? 'Flickr is disconnected. Open Options and connect your Flickr account.'
+            : 'This photo is not editable by the connected Flickr account.'
+        );
         updatePublishState();
         return;
       }
@@ -101,6 +136,9 @@
         setFooter('Ready to generate a draft from the current page.');
       }
       updatePublishState();
+      if (state.auth?.connected) {
+        void loadGroups();
+      }
     } catch (error) {
       state.context = null;
       state.draft = null;
@@ -196,6 +234,288 @@
 
     await navigator.clipboard.writeText(JSON.stringify(draft, null, 2));
     setStatus('Draft JSON copied to clipboard.', true);
+  }
+
+  async function loadGroups() {
+    if (!state.context?.photoId || !state.auth?.connected) {
+      renderGroups(null, 'Connect Flickr to manage groups.');
+      return;
+    }
+
+    elements.groupsRefreshBtn.disabled = true;
+    elements.groupsRefreshBtn.textContent = 'Refreshing...';
+    elements.groupsSummary.textContent = 'Loading approved, pending, and eligible groups...';
+    clearGroupsFeedback();
+    try {
+      const response = await sendMessage({
+        type: 'flickr-meta:get-photo-groups',
+        photoId: state.context.photoId,
+        tags: currentFormDraft().tags,
+      });
+      state.groups = response.groups;
+      renderGroups(state.groups);
+    } catch (error) {
+      renderGroups(null);
+      showGroupsFeedback(`Group refresh failed: ${String(error.message || error)}`);
+    } finally {
+      elements.groupsRefreshBtn.disabled = false;
+      elements.groupsRefreshBtn.textContent = 'Refresh groups';
+    }
+  }
+
+  async function handleGroupAction(event) {
+    const button = event.target.closest('button[data-group-action]');
+    if (!button || !state.context?.photoId) {
+      return;
+    }
+
+    const action = button.dataset.groupAction;
+    const groupId = button.dataset.groupId || '';
+    const groupName = button.dataset.groupName || groupId;
+    if (action === 'leave-on-flickr') {
+      const groupUrl = button.dataset.groupUrl || '';
+      if (groupUrl) {
+        chrome.tabs.create({ url: groupUrl });
+      }
+      return;
+    }
+    if (action === 'join') {
+      button.disabled = true;
+      clearGroupsFeedback();
+      elements.groupsSummary.textContent = `Checking ${groupName}...`;
+      try {
+        const infoResponse = await sendMessage({
+          type: 'flickr-meta:get-group-join-info',
+          groupId,
+        });
+        const group = infoResponse.group || {};
+        const rules = String(group.rules || '').trim();
+        const decision = await confirmGroupJoin({
+          name: group.name || groupName,
+          description: group.description || '',
+          rules,
+        });
+        if (!decision.confirmed) {
+          renderGroups(state.groups);
+          return;
+        }
+
+        elements.groupsSummary.textContent = `Joining ${groupName}...`;
+        const response = await sendMessage({
+          type: 'flickr-meta:join-group',
+          photoId: state.context.photoId,
+          groupId,
+          acceptRules: Boolean(rules),
+          tags: currentFormDraft().tags,
+        });
+        if (response.invitationRequired) {
+          const invitation = await confirmGroupJoin({
+            name: group.name || groupName,
+            description: group.description || '',
+            rules,
+          }, { invitation: true });
+          if (!invitation.confirmed) {
+            renderGroups(state.groups);
+            return;
+          }
+
+          elements.groupsSummary.textContent = `Requesting an invitation to ${groupName}...`;
+          const requestResponse = await sendMessage({
+            type: 'flickr-meta:request-group-invitation',
+            photoId: state.context.photoId,
+            groupId,
+            message: invitation.message,
+            acceptRules: true,
+            tags: currentFormDraft().tags,
+          });
+          state.groups = requestResponse.groups;
+          renderGroups(state.groups);
+          setFooter(`Invitation requested from ${groupName}.`);
+          return;
+        }
+        state.groups = response.groups;
+        renderGroups(state.groups);
+        setFooter(`Joined ${groupName}. You can now submit this photo to the group.`);
+      } catch (error) {
+        showGroupsFeedback(`Join failed: ${String(error.message || error)}`);
+        button.disabled = false;
+      }
+      return;
+    }
+    const verb = action === 'remove' ? 'Remove this photo from' : 'Submit this photo to';
+    if (!confirm(`${verb} ${groupName}?`)) {
+      return;
+    }
+
+    button.disabled = true;
+    clearGroupsFeedback();
+    elements.groupsSummary.textContent = action === 'remove'
+      ? `Removing from ${groupName}...`
+      : `Submitting to ${groupName}...`;
+    try {
+      const response = await sendMessage({
+        type: action === 'remove'
+          ? 'flickr-meta:remove-photo-from-group'
+          : 'flickr-meta:add-photo-to-group',
+        photoId: state.context.photoId,
+        groupId,
+        groupName,
+        tags: currentFormDraft().tags,
+      });
+      state.groups = response.groups;
+      renderGroups(state.groups);
+    } catch (error) {
+      const message = `Group update failed: ${String(error.message || error)}`;
+      showGroupsFeedback(message);
+      setFooter(message);
+      button.disabled = false;
+    }
+  }
+
+  function showGroupsFeedback(message) {
+    elements.groupsFeedback.textContent = message;
+    elements.groupsFeedback.classList.remove('hidden');
+  }
+
+  function clearGroupsFeedback() {
+    elements.groupsFeedback.textContent = '';
+    elements.groupsFeedback.classList.add('hidden');
+  }
+
+  function confirmGroupJoin(group, options = {}) {
+    const invitation = options.invitation === true;
+    state.groupDialogMode = invitation ? 'invitation' : 'join';
+    elements.groupJoinTitle.textContent = invitation
+      ? `Request an invitation to ${group.name}?`
+      : `Join ${group.name}?`;
+    elements.groupJoinDescription.textContent = group.description || 'Join this Flickr group with the connected account.';
+    elements.groupJoinRules.textContent = group.rules || '';
+    elements.groupJoinRulesWrap.classList.toggle('hidden', !group.rules);
+    elements.groupInvitationMessageWrap.classList.toggle('hidden', !invitation);
+    elements.groupInvitationMessage.value = invitation
+      ? `Hello, I would like to join ${group.name} and share relevant photos.`
+      : '';
+    elements.groupJoinConfirmBtn.textContent = invitation ? 'Send request' : 'Join group';
+    elements.groupJoinNotice.textContent = invitation
+      ? 'This message will be sent to the group administrators through Flickr.'
+      : group.rules
+        ? 'Joining confirms that you have read and accepted these rules.'
+        : 'The group did not return any rules through the Flickr API.';
+
+    return new Promise((resolve) => {
+      const handleClose = () => {
+        elements.groupJoinDialog.removeEventListener('close', handleClose);
+        resolve({
+          confirmed: elements.groupJoinDialog.returnValue === 'confirm',
+          message: elements.groupInvitationMessage.value.trim(),
+        });
+      };
+      elements.groupJoinDialog.addEventListener('close', handleClose);
+      elements.groupJoinDialog.showModal();
+    });
+  }
+
+  function toggleEligibleGroups() {
+    state.showAllEligible = !state.showAllEligible;
+    renderGroups(state.groups);
+  }
+
+  function renderGroups(groups, message = '') {
+    state.groups = groups;
+    clearGroupsFeedback();
+    if (!groups || !Array.isArray(groups.items)) {
+      state.showAllEligible = false;
+      elements.groupsToggleEligibleBtn.classList.add('hidden');
+      elements.groupsSummary.textContent = message || 'Refresh to inspect this photo\'s groups.';
+      elements.groupsList.replaceChildren();
+      return;
+    }
+
+    const counts = groups.counts || {};
+    const hiddenEligible = groups.items.filter((group) => group.status === 'eligible').length;
+    elements.groupsSummary.textContent = [
+      `${counts.approved || 0} approved`,
+      `${counts.pending || 0} pending`,
+      `${counts.invitationRequested || 0} invitation requested`,
+      `${counts.suggested || 0} suggested`,
+      `${counts.discovered || 0} discovered`,
+      `${counts.totalEligible || 0} eligible checked`,
+      !state.showAllEligible && hiddenEligible ? `${hiddenEligible} hidden` : '',
+    ].filter(Boolean).join(' · ');
+
+    elements.groupsToggleEligibleBtn.classList.toggle('hidden', hiddenEligible === 0);
+    elements.groupsToggleEligibleBtn.textContent = state.showAllEligible
+      ? 'Hide unrelated'
+      : `Show all eligible (${hiddenEligible})`;
+
+    const fragment = document.createDocumentFragment();
+    for (const group of groups.items) {
+      if (group.status === 'eligible' && !state.showAllEligible) {
+        continue;
+      }
+      const row = document.createElement('article');
+      row.className = 'group-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'group-copy';
+      const link = document.createElement('a');
+      link.href = group.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = group.name;
+      const detail = document.createElement('span');
+      detail.className = `group-status status-${group.status}`;
+      const statusLabel = group.status === 'membership-requested'
+        ? 'Invitation requested'
+        : group.status;
+      detail.textContent = group.matches?.length
+        ? `${statusLabel} · matches ${group.matches.join(', ')}`
+        : statusLabel;
+      copy.append(link, detail);
+
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.dataset.groupId = group.id;
+      action.dataset.groupName = group.name;
+      if (group.status === 'approved') {
+        action.dataset.groupAction = 'remove';
+        action.textContent = 'Remove';
+      } else if (group.status === 'pending') {
+        action.disabled = true;
+        action.textContent = 'Pending';
+      } else if (group.status === 'membership-requested') {
+        action.disabled = true;
+        action.textContent = 'Requested';
+      } else if (group.status === 'discovered') {
+        action.dataset.groupAction = 'join';
+        action.textContent = 'Join';
+      } else {
+        action.dataset.groupAction = 'submit';
+        action.textContent = 'Submit';
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'group-row-actions';
+      actions.append(action);
+
+      const isMember = ['approved', 'pending', 'suggested', 'eligible'].includes(group.status);
+      if (isMember) {
+        const leave = document.createElement('button');
+        leave.type = 'button';
+        leave.className = 'group-leave-action';
+        leave.dataset.groupAction = 'leave-on-flickr';
+        leave.dataset.groupId = group.id;
+        leave.dataset.groupName = group.name;
+        leave.dataset.groupUrl = group.url;
+        leave.textContent = 'Leave on Flickr';
+        leave.title = 'Open this group on Flickr to leave it safely';
+        actions.append(leave);
+      }
+
+      row.append(copy, actions);
+      fragment.append(row);
+    }
+    elements.groupsList.replaceChildren(fragment);
   }
 
   function reloadCurrentTab() {

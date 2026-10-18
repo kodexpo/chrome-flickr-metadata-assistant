@@ -45,6 +45,26 @@
           </select>
         </label>
 
+        <label>
+          <span>Visual interpretation</span>
+          <select id="draftFidelity">
+            <option value="literal">literal — only clearly visible facts</option>
+            <option value="balanced">balanced — factual with natural phrasing</option>
+            <option value="expressive">expressive — vivid but visually grounded</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Writing tone</span>
+          <select id="draftTone">
+            <option value="neutral">neutral</option>
+            <option value="warm">warm</option>
+            <option value="playful">playful / funny</option>
+            <option value="documentary">documentary</option>
+            <option value="poetic">poetic</option>
+          </select>
+        </label>
+
         <label class="checkbox-row">
           <input id="preferLocalFirst" type="checkbox">
           <span>Prefer local vision first when provider is auto</span>
@@ -67,7 +87,7 @@
 
         <label>
           <span>DeepSeek model</span>
-          <input id="deepseekModel" type="text" placeholder="deepseek-v4-flash">
+          <input id="deepseekModel" type="text" placeholder="deepseek-flash">
         </label>
 
         <label>
@@ -91,6 +111,7 @@
         <button id="disconnectBtn" type="button">Disconnect</button>
         <button id="connectBtn" type="button" class="primary">Connect Flickr</button>
       </div>
+      <p id="authActionStatus" class="status auth-action-status" aria-live="polite"></p>
     </section>
 
     <section class="panel callback-panel">
@@ -102,7 +123,7 @@
     <section class="panel legal-panel">
       <strong>About / Legal</strong>
       <p class="status">Publisher: KodeXpo.</p>
-      <p class="status">This extension processes Flickr page data to draft, review, and apply metadata only for the user's own Flickr photos and other content they own or control. Depending on the selected provider, photo text and image data may be sent to OpenAI, DeepSeek, or a local Ollama instance to generate draft metadata. The extension handles authentication information such as Flickr OAuth tokens and account identifiers, website content such as Flickr page titles, descriptions, tags, and image data, and locally stored draft metadata and settings. It stores this information locally in Chrome on the user's device. It does not sell user data or use it for advertising.</p>
+      <p class="status">This extension processes Flickr page data to draft, review, and apply metadata and to manage group placement only for the user's own Flickr photos and other content they own or control. Depending on the selected provider, photo text and image data may be sent to OpenAI, DeepSeek, or a local Ollama instance to generate draft metadata. The extension handles authentication information such as Flickr OAuth tokens and account identifiers, website content such as Flickr page titles, descriptions, tags, image data, and group placement, plus locally stored drafts, group-submission status, and settings. It stores this information locally in Chrome on the user's device. It does not sell user data or use it for advertising.</p>
       <p class="status">This product uses the Flickr API but is not endorsed or certified by SmugMug, Inc.</p>
       <p class="status">This extension is a drafting and publishing aid. It does not guarantee the accuracy, legality, or suitability of generated metadata. You are responsible for reviewing all titles, descriptions, tags, visibility changes, and publication actions before applying them.</p>
       <p class="status">This extension is provided “as is” and “as available.” We make no warranty that generated or edited metadata is accurate, complete, suitable, or legally safe. You are solely responsible for reviewing all titles, descriptions, tags, visibility changes, and publication actions before applying them. Use this extension only for photos and content you own or control. We are not responsible for errors, data loss, or issues caused by Flickr or third-party AI providers.</p>

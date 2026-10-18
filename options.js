@@ -14,6 +14,8 @@
 
   function bindElements() {
     elements.provider = document.getElementById('provider');
+    elements.draftFidelity = document.getElementById('draftFidelity');
+    elements.draftTone = document.getElementById('draftTone');
     elements.preferLocalFirst = document.getElementById('preferLocalFirst');
     elements.flickrApiKey = document.getElementById('flickrApiKey');
     elements.flickrApiSecret = document.getElementById('flickrApiSecret');
@@ -26,6 +28,7 @@
     elements.connectBtn = document.getElementById('connectBtn');
     elements.disconnectBtn = document.getElementById('disconnectBtn');
     elements.authStatus = document.getElementById('authStatus');
+    elements.authActionStatus = document.getElementById('authActionStatus');
     elements.redirectUrl = document.getElementById('redirectUrl');
     elements.saveBtn = document.getElementById('saveBtn');
     elements.resetBtn = document.getElementById('resetBtn');
@@ -72,6 +75,8 @@
 
   function populateForm(settings) {
     elements.provider.value = settings.provider;
+    elements.draftFidelity.value = settings.draftFidelity;
+    elements.draftTone.value = settings.draftTone;
     elements.preferLocalFirst.checked = Boolean(settings.preferLocalFirst);
     elements.flickrApiKey.value = settings.flickrApiKey || '';
     elements.flickrApiSecret.value = settings.flickrApiSecret || '';
@@ -95,6 +100,8 @@
       flickrUsername: existing.flickrUsername || '',
       flickrFullname: existing.flickrFullname || '',
       provider: elements.provider.value,
+      draftFidelity: elements.draftFidelity.value,
+      draftTone: elements.draftTone.value,
       preferLocalFirst: elements.preferLocalFirst.checked,
       openaiApiKey: elements.openaiApiKey.value.trim(),
       openaiModel: elements.openaiModel.value.trim(),
@@ -117,13 +124,15 @@
     try {
       const response = await sendMessage({ type: 'flickr-meta:get-state' });
       const backup = {
-        schemaVersion: 1,
+        schemaVersion: 3,
         app: 'flickr-metadata-assistant',
         exportedAt: new Date().toISOString(),
         settings: response.settings || {},
         drafts: response.drafts || {},
         lastContext: response.lastContext || null,
         lastDraft: response.lastDraft || null,
+        groupTracking: response.groupTracking || {},
+        groupMembershipRequests: response.groupMembershipRequests || {},
       };
 
       downloadJson(`flickr-metadata-assistant-backup-${timestampForFilename()}.json`, backup);
@@ -169,14 +178,41 @@
   }
 
   async function connectFlickr() {
-    setStatus('Connecting to Flickr...');
+    setConnectionStatus('Saving settings...');
+    elements.connectBtn.disabled = true;
+    elements.connectBtn.textContent = 'Connecting...';
     try {
       await saveSettings();
-      const response = await sendMessage({ type: 'flickr-meta:connect-flickr' });
+      setConnectionStatus('Opening Flickr authorization...');
+      const prepared = await sendMessage({ type: 'flickr-meta:prepare-flickr-auth' });
+      const authorizeUrl = prepared.authorization?.authorizeUrl || '';
+      if (!authorizeUrl) {
+        throw new Error('Flickr authorization URL was not created.');
+      }
+
+      const callbackUrl = await chrome.identity.launchWebAuthFlow({
+        url: authorizeUrl,
+        interactive: true,
+      });
+      if (!callbackUrl) {
+        throw new Error('Flickr authorization was cancelled.');
+      }
+
+      setConnectionStatus('Completing Flickr connection...');
+      const response = await sendMessage({
+        type: 'flickr-meta:complete-flickr-auth',
+        callbackUrl,
+      });
       renderAuthStatus(response.auth || null);
+      setConnectionStatus('Flickr connected.');
       setStatus('Flickr connected.');
     } catch (error) {
-      setStatus(`Flickr connection failed: ${String(error.message || error)}`);
+      const message = `Flickr connection failed: ${String(error.message || error)}`;
+      setConnectionStatus(message, true);
+      setStatus(message);
+    } finally {
+      elements.connectBtn.disabled = false;
+      elements.connectBtn.textContent = 'Connect Flickr';
     }
   }
 
@@ -184,6 +220,7 @@
     try {
       const response = await sendMessage({ type: 'flickr-meta:disconnect-flickr' });
       renderAuthStatus(response.auth || null);
+      setConnectionStatus('Flickr disconnected.');
       setStatus('Flickr disconnected.');
     } catch (error) {
       setStatus(`Disconnect failed: ${String(error.message || error)}`);
@@ -197,6 +234,11 @@
 
   function setStatus(text) {
     elements.statusText.textContent = text;
+  }
+
+  function setConnectionStatus(text, isError = false) {
+    elements.authActionStatus.textContent = text;
+    elements.authActionStatus.classList.toggle('error', isError);
   }
 
   function renderAuthStatus(auth) {

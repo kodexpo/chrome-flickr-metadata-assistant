@@ -113,6 +113,10 @@
   }
 
   function readPageTitleCandidate() {
+    const photoTitle = readPhotoField('input.edit-photo-title, textarea.edit-photo-title', 'h1.photo-title');
+    if (photoTitle !== null) {
+      return photoTitle;
+    }
     const exactPhotoTitle = cleanText(
       document.querySelector('div.title-desc-block h1.editable.meta-field.photo-title, h1.editable.meta-field.photo-title, h1.photo-title')?.textContent || ''
     );
@@ -132,6 +136,10 @@
   }
 
   function readPageDescriptionCandidate() {
+    const photoDescription = readPhotoField('textarea.edit-photo-desc', '.photo-desc');
+    if (photoDescription !== null) {
+      return photoDescription;
+    }
     const exactPhotoDescription = cleanText(
       document.querySelector('h2.editable.meta-field.photo-desc p, h2.meta-field.photo-desc p, .photo-desc p')?.textContent || ''
     );
@@ -166,6 +174,30 @@
       .filter((text) => text && !looksLikeUiLabel(text));
 
     return headings.find((text) => text.length >= 4 && text.length <= 140) || '';
+  }
+
+  function readPhotoField(editorSelector, displaySelector) {
+    const displays = Array.from(document.querySelectorAll(displaySelector));
+    const editors = Array.from(document.querySelectorAll(editorSelector));
+    if (!displays.length && !editors.length) {
+      return null;
+    }
+    const isPlaceholder = (node, value) => node.classList.contains('placeholder-text')
+      || /^(add title|add description)$/i.test(value);
+    // Flickr renders duplicate sidebar fields; prefer an active, populated editor.
+    for (const editor of editors) {
+      const value = cleanText(editor.value);
+      if (editor.classList.contains('show-editable') && value && !isPlaceholder(editor, value)) {
+        return value;
+      }
+    }
+    for (const display of displays) {
+      const value = cleanText(display.textContent);
+      if (value && !isPlaceholder(display, value)) {
+        return value;
+      }
+    }
+    return '';
   }
 
   function readVisibleDescriptionCandidate() {
@@ -233,9 +265,9 @@
     const pageTitle = readPageTitleCandidate();
     const description = readPageDescriptionCandidate();
     const imageUrl = findImageUrl();
-    const currentTitle = pageTitle || readCurrentField(['title', 'photo title', 'name']);
-    const currentDescription = description || readCurrentField(['description', 'caption', 'details']);
-    const currentTags = readPageTagsCandidate() || readCurrentField(['tag', 'tags', 'keywords']);
+    const currentTitle = pageTitle;
+    const currentDescription = description;
+    const currentTags = readPageTagsCandidate();
 
     return {
       photoId,
@@ -334,12 +366,18 @@
       return;
     }
 
+    // Flickr only renders these editing controls for the signed-in photo owner.
+    // Keep the launcher available so a disconnected extension can explain how to reconnect.
+    if (hasOwnerEditControls()) {
+      injectLauncher();
+    }
+
     const photoId = extractPhotoId();
     const cached = ownershipCache.photoId === photoId && (Date.now() - ownershipCache.updatedAt) < OWNERSHIP_CACHE_TTL;
     if (cached) {
       if (ownershipCache.canEditPhoto) {
         injectLauncher();
-      } else {
+      } else if (!hasOwnerEditControls()) {
         removeLauncher();
       }
       return Promise.resolve();
@@ -361,9 +399,13 @@
         return;
       }
 
-      removeLauncher();
+      if (!hasOwnerEditControls()) {
+        removeLauncher();
+      }
     }).catch(() => {
-      removeLauncher();
+      if (!hasOwnerEditControls()) {
+        removeLauncher();
+      }
     }).finally(() => {
       launcherSyncPromise = null;
     });
@@ -448,7 +490,12 @@
     }
 
     try {
-      const response = await sendMessage({ type: 'flickr-meta:photo-ownership', photoId });
+      const response = await sendMessage({
+        type: 'flickr-meta:photo-ownership',
+        photoId,
+        pageOwner: extractPageOwner(),
+        hasOwnerControls: hasOwnerEditControls(),
+      });
       return response.ownership || { canEditPhoto: false };
     } catch {
       return {
@@ -456,6 +503,25 @@
         reason: 'Unable to verify ownership.',
       };
     }
+  }
+
+  function extractPageOwner() {
+    const match = location.pathname.match(/^\/photos\/([^/]+)\/\d+/i);
+    return match ? decodeURIComponent(match[1]).trim() : '';
+  }
+
+  function hasOwnerEditControls() {
+    const hasTitleEditor = Boolean(document.querySelector(
+      '.title-desc-block input.edit-photo-title, input.meta-field.edit-photo-title'
+    ));
+    const hasDescriptionEditor = Boolean(document.querySelector(
+      '.title-desc-block textarea.edit-photo-desc, textarea.meta-field.edit-photo-desc'
+    ));
+    const hasPrivacyControl = Array.from(document.querySelectorAll('button'))
+      .some((button) => ['public', 'private', 'friends', 'family', 'friends & family']
+        .includes(cleanText(button.textContent || '').toLowerCase()));
+
+    return hasTitleEditor && hasDescriptionEditor && hasPrivacyControl;
   }
 
   function sendMessage(message) {

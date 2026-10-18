@@ -1,5 +1,7 @@
 # Flickr Metadata Assistant
 
+Current version: **0.3.2**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+
 Standalone Chrome extension for drafting Flickr photo metadata directly in the browser.
 Published by KodeXpo.
 
@@ -29,9 +31,18 @@ Published by KodeXpo.
 
 Open the extension options page and enter any API keys or model names you want to use.
 
+Draft style can be configured independently of the AI provider:
+
+- Visual interpretation: literal, balanced, or expressive
+- Writing tone: neutral, warm, playful, documentary, or poetic
+
+Tags remain factual regardless of the selected writing tone.
+
+The photo panel can also inspect Flickr group placement. It shows approved pools, tracks moderated submissions made through the extension, lists groups that accept the connected user's photos, and searches Flickr for new groups using specific photo tags. Discovered public groups can be joined directly from the panel after confirmation. For invitation-only groups, the extension can send a user-reviewed membership request to the group administrators. Submitting to or removing from a group also requires explicit confirmation. Confirmed memberships include a safe link to leave through Flickr without granting the extension Flickr's broad delete permission. The group name remains a link for reviewing its page and rules.
+
 Settings are stored in `chrome.storage.local`.
 
-If you want a reinstall-safe copy, use the Options page backup tools to export a JSON backup. It includes the stored Flickr credentials, AI settings, and saved draft state so you can restore them after uninstalling or clearing Chrome data.
+If you want a reinstall-safe copy, use the Options page backup tools to export a JSON backup. It includes the stored Flickr credentials, AI settings, saved draft state, group-submission tracking, and pending group invitation requests so you can restore them after uninstalling or clearing Chrome data.
 
 If Flickr asks for a callback URL, use the one shown on the options page. It is generated from `chrome.identity.getRedirectURL('flickr')`.
 

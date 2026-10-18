@@ -8,6 +8,9 @@ const STORAGE_KEYS = {
   lastContext: 'flickrMetaLastContext',
   lastDraft: 'flickrMetaLastDraft',
   openerTab: 'flickrMetaOpenerTab',
+  pendingFlickrAuth: 'flickrMetaPendingFlickrAuth',
+  groupTracking: 'flickrMetaGroupTracking',
+  groupMembershipRequests: 'flickrMetaGroupMembershipRequests',
 };
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -40,6 +43,10 @@ async function handleMessage(message, sender) {
       return { restored: await restoreBackup(message.backup || {}) };
     case 'flickr-meta:connect-flickr':
       return { auth: await connectFlickr() };
+    case 'flickr-meta:prepare-flickr-auth':
+      return { authorization: await prepareFlickrAuth() };
+    case 'flickr-meta:complete-flickr-auth':
+      return { auth: await completeFlickrAuth(message.callbackUrl || '') };
     case 'flickr-meta:disconnect-flickr':
       return { auth: await disconnectFlickr() };
     case 'flickr-meta:open-popup':
@@ -56,7 +63,13 @@ async function handleMessage(message, sender) {
       return { context };
     }
     case 'flickr-meta:photo-ownership':
-      return { ownership: await getPhotoOwnership(message.photoId || '') };
+      return {
+        ownership: await getPhotoOwnership(
+          message.photoId || '',
+          message.pageOwner || '',
+          Boolean(message.hasOwnerControls)
+        ),
+      };
     case 'flickr-meta:generate-draft': {
       const context = message.context || await collectContext(await resolveTabId(message.tabId, sender));
       const settings = await getSettings();
@@ -90,6 +103,42 @@ async function handleMessage(message, sender) {
     }
     case 'flickr-meta:get-last-draft':
       return { draft: await getLastDraft() };
+    case 'flickr-meta:get-photo-groups':
+      return { groups: await getPhotoGroups(message.photoId || '', message.tags || []) };
+    case 'flickr-meta:get-group-join-info':
+      return { group: await getGroupJoinInfo(message.groupId || '') };
+    case 'flickr-meta:join-group':
+      return joinGroup(
+        message.photoId || '',
+        message.groupId || '',
+        message.acceptRules === true,
+        message.tags || []
+      );
+    case 'flickr-meta:request-group-invitation':
+      return requestGroupInvitation(
+        message.photoId || '',
+        message.groupId || '',
+        message.message || '',
+        message.acceptRules === true,
+        message.tags || []
+      );
+    case 'flickr-meta:add-photo-to-group':
+      return {
+        groups: await addPhotoToGroup(
+          message.photoId || '',
+          message.groupId || '',
+          message.groupName || '',
+          message.tags || []
+        ),
+      };
+    case 'flickr-meta:remove-photo-from-group':
+      return {
+        groups: await removePhotoFromGroup(
+          message.photoId || '',
+          message.groupId || '',
+          message.tags || []
+        ),
+      };
     case 'flickr-meta:clear-last-draft':
       await chrome.storage.local.remove(STORAGE_KEYS.lastDraft);
       return { cleared: true };
@@ -163,6 +212,8 @@ async function getState() {
     STORAGE_KEYS.drafts,
     STORAGE_KEYS.lastContext,
     STORAGE_KEYS.lastDraft,
+    STORAGE_KEYS.groupTracking,
+    STORAGE_KEYS.groupMembershipRequests,
   ]);
   const settings = Ext.normalizeSettings(store[STORAGE_KEYS.settings] || {});
 
@@ -172,6 +223,8 @@ async function getState() {
     drafts: store[STORAGE_KEYS.drafts] || {},
     lastContext: store[STORAGE_KEYS.lastContext] || null,
     lastDraft: store[STORAGE_KEYS.lastDraft] || null,
+    groupTracking: store[STORAGE_KEYS.groupTracking] || {},
+    groupMembershipRequests: store[STORAGE_KEYS.groupMembershipRequests] || {},
   };
 }
 
@@ -233,6 +286,14 @@ async function restoreBackup(backup) {
     await chrome.storage.local.remove(STORAGE_KEYS.lastDraft);
   }
 
+  if (parsed.hasGroupTracking) {
+    operations[STORAGE_KEYS.groupTracking] = parsed.groupTracking;
+  }
+
+  if (parsed.hasGroupMembershipRequests) {
+    operations[STORAGE_KEYS.groupMembershipRequests] = parsed.groupMembershipRequests;
+  }
+
   if (Object.keys(operations).length) {
     await chrome.storage.local.set(operations);
   }
@@ -242,6 +303,8 @@ async function restoreBackup(backup) {
     drafts: parsed.hasDrafts ? parsed.drafts : {},
     lastContext: parsed.hasLastContext ? parsed.lastContext : null,
     lastDraft: parsed.hasLastDraft ? parsed.lastDraft : null,
+    groupTracking: parsed.hasGroupTracking ? parsed.groupTracking : {},
+    groupMembershipRequests: parsed.hasGroupMembershipRequests ? parsed.groupMembershipRequests : {},
   };
 }
 
@@ -258,6 +321,16 @@ function normalizeBackup(backup) {
   const lastContext = hasLastContext
     ? source.lastContext || null
     : (lastDraft && lastDraft.context ? lastDraft.context : null);
+  const hasGroupTracking = Object.prototype.hasOwnProperty.call(source, 'groupTracking');
+  const groupTracking = hasGroupTracking && source.groupTracking && typeof source.groupTracking === 'object'
+    ? source.groupTracking
+    : {};
+  const hasGroupMembershipRequests = Object.prototype.hasOwnProperty.call(source, 'groupMembershipRequests');
+  const groupMembershipRequests = hasGroupMembershipRequests
+    && source.groupMembershipRequests
+    && typeof source.groupMembershipRequests === 'object'
+    ? source.groupMembershipRequests
+    : {};
 
   return {
     settings,
@@ -267,6 +340,10 @@ function normalizeBackup(backup) {
     hasLastDraft,
     lastContext,
     lastDraft,
+    hasGroupTracking,
+    groupTracking,
+    hasGroupMembershipRequests,
+    groupMembershipRequests,
   };
 }
 
@@ -362,7 +439,7 @@ async function collectContext(tabId) {
   return response.context;
 }
 
-async function getPhotoOwnership(photoId) {
+async function getPhotoOwnership(photoId, pageOwner = '', hasOwnerControls = false) {
   const settings = await getSettings();
   if (!Ext.hasFlickrAuth(settings)) {
     return {
@@ -372,13 +449,34 @@ async function getPhotoOwnership(photoId) {
     };
   }
 
+  const currentNsid = String(settings.flickrUserNsid || '').trim();
+  const currentUsername = String(settings.flickrUsername || '').trim();
+  const normalizedPageOwner = String(pageOwner || '').trim().toLowerCase();
+  const pageOwnerMatches = Boolean(
+    normalizedPageOwner &&
+    (
+      normalizedPageOwner === currentUsername.toLowerCase() ||
+      normalizedPageOwner === currentNsid.toLowerCase()
+    )
+  );
+
+  if (hasOwnerControls && pageOwnerMatches) {
+    return {
+      canEditPhoto: true,
+      photoId: String(photoId || ''),
+      ownerNsid: currentNsid,
+      ownerUsername: currentUsername,
+      currentNsid,
+      currentUsername,
+      verifiedBy: 'page-owner-controls',
+    };
+  }
+
   const info = await getFlickrPhotoInfo(String(photoId || '').trim(), settings);
   const photo = info.photo || {};
   const owner = photo.owner && typeof photo.owner === 'object' ? photo.owner : {};
   const ownerNsid = String(owner.nsid || '').trim();
   const ownerUsername = String(owner.username || '').trim();
-  const currentNsid = String(settings.flickrUserNsid || '').trim();
-  const currentUsername = String(settings.flickrUsername || '').trim();
   const canEditPhoto = Boolean(
     ownerNsid &&
     currentNsid &&
@@ -430,6 +528,9 @@ async function generateDraft(context, settings) {
       }
 
       const draft = await draftWithProvider(provider, context, settings);
+      if (failures.length) {
+        draft.notes = [...failures, draft.notes].filter(Boolean).join('\n');
+      }
       return draft;
     } catch (error) {
       failures.push(formatFailure(provider, error));
@@ -448,11 +549,11 @@ function buildProviderOrder(preference, preferLocalFirst) {
 
   switch (preference) {
     case 'local':
-      return ['local', 'openai', 'deepseek', 'heuristic'];
+      return ['local', 'heuristic'];
     case 'openai':
-      return ['openai', 'local', 'deepseek', 'heuristic'];
+      return ['openai', 'heuristic'];
     case 'deepseek':
-      return ['deepseek', 'local', 'openai', 'heuristic'];
+      return ['deepseek', 'heuristic'];
     case 'heuristic':
       return ['heuristic'];
     default:
@@ -490,7 +591,7 @@ async function draftWithLocalVision(context, settings) {
     throw new Error('No image URL available for local vision.');
   }
 
-  const imageBytes = await fetchImageAsBase64(context.imageUrl);
+  const imageBytes = await fetchImageAsBase64(context.imageUrl, context.photoPageUrl);
   const payload = {
     model,
     messages: [
@@ -500,7 +601,7 @@ async function draftWithLocalVision(context, settings) {
       },
       {
         role: 'user',
-        content: Ext.buildTextPrompt(context),
+        content: Ext.buildTextPrompt(context, settings),
         images: [imageBytes],
       },
     ],
@@ -527,14 +628,15 @@ async function draftWithOpenAI(context, settings) {
   const userContent = [
     {
       type: 'input_text',
-      text: Ext.buildTextPrompt(context),
+      text: Ext.buildTextPrompt(context, settings),
     },
   ];
 
   if (context.imageUrl) {
+    const imageDataUrl = await fetchImageAsDataUrl(context.imageUrl, context.photoPageUrl);
     userContent.push({
       type: 'input_image',
-      image_url: context.imageUrl,
+      image_url: imageDataUrl,
       detail: 'low',
     });
   }
@@ -581,24 +683,41 @@ async function draftWithDeepSeek(context, settings) {
     throw new Error('Missing DeepSeek API key.');
   }
 
-  const model = String(settings.deepseekModel || Ext.DEFAULT_SETTINGS.deepseekModel || 'deepseek-v4-flash').trim();
+  const model = String(settings.deepseekModel || Ext.DEFAULT_SETTINGS.deepseekModel || 'deepseek-flash').trim();
+  const userContent = [
+    {
+      type: 'text',
+      text: Ext.buildTextPrompt(context, settings),
+    },
+  ];
+
+  if (context.imageUrl) {
+    const imageDataUrl = await fetchImageAsDataUrl(context.imageUrl, context.photoPageUrl);
+    userContent.push({
+      type: 'image_url',
+      image_url: {
+        url: imageDataUrl,
+      },
+    });
+  }
+
   const payload = {
     model,
     messages: [
       {
         role: 'system',
-        content: 'You generate concise, faithful Flickr metadata from existing text metadata only. Return only valid JSON with keys title, description, tags, confidence, notes. Prefer concrete facts over invented details. Do not mention location, GPS coordinates, or privacy status.',
+        content: 'You generate concise, faithful Flickr metadata from an image and existing text metadata. Return only valid JSON with keys title, description, tags, confidence, notes. Prefer concrete visual facts over invented details. Do not mention location, GPS coordinates, or privacy status.',
       },
       {
         role: 'user',
-        content: Ext.buildTextPrompt(context),
+        content: userContent,
       },
     ],
     response_format: {
       type: 'json_object',
     },
     temperature: 0.3,
-    max_tokens: 500,
+    max_tokens: 4000,
   };
 
   const response = await requestJson('https://api.deepseek.com/chat/completions', payload, {
@@ -681,11 +800,26 @@ function extractOllamaContent(response) {
   throw new Error('Local vision response did not contain message content.');
 }
 
-async function fetchImageAsBase64(imageUrl) {
-  const response = await fetch(imageUrl, { method: 'GET' });
+async function fetchImageResponse(imageUrl, referrer = '') {
+  const options = {
+    method: 'GET',
+    credentials: 'include',
+  };
+  if (referrer) {
+    options.referrer = referrer;
+    options.referrerPolicy = 'strict-origin-when-cross-origin';
+  }
+
+  const response = await fetch(imageUrl, options);
   if (!response.ok) {
     throw new Error(`Failed to download image (${response.status}).`);
   }
+
+  return response;
+}
+
+async function fetchImageAsBase64(imageUrl, referrer = '') {
+  const response = await fetchImageResponse(imageUrl, referrer);
 
   const buffer = await response.arrayBuffer();
   const bytes = new Uint8Array(buffer);
@@ -700,6 +834,21 @@ async function fetchImageAsBase64(imageUrl) {
   return btoa(binary);
 }
 
+async function fetchImageAsDataUrl(imageUrl, referrer = '') {
+  const response = await fetchImageResponse(imageUrl, referrer);
+  const contentType = response.headers.get('content-type') || 'image/jpeg';
+  const buffer = await response.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
+  }
+
+  return `data:${contentType};base64,${btoa(binary)}`;
+}
+
 function getAuthState(settings) {
   const connected = Ext.hasFlickrAuth(settings);
   return {
@@ -711,6 +860,16 @@ function getAuthState(settings) {
 }
 
 async function connectFlickr() {
+  const authorization = await prepareFlickrAuth();
+  const callbackUrl = await chrome.identity.launchWebAuthFlow({
+    url: authorization.authorizeUrl,
+    interactive: true,
+  });
+
+  return completeFlickrAuth(callbackUrl || '');
+}
+
+async function prepareFlickrAuth() {
   const settings = await getSettings();
   if (!settings.flickrApiKey || !settings.flickrApiSecret) {
     throw new Error('Set the Flickr API key and secret first.');
@@ -722,13 +881,29 @@ async function connectFlickr() {
   authorizeUrl.searchParams.set('oauth_token', requestToken.oauth_token);
   authorizeUrl.searchParams.set('perms', 'write');
 
-  const callbackUrl = await chrome.identity.launchWebAuthFlow({
-    url: authorizeUrl.toString(),
-    interactive: true,
+  await chrome.storage.session.set({
+    [STORAGE_KEYS.pendingFlickrAuth]: {
+      oauthToken: requestToken.oauth_token,
+      oauthTokenSecret: requestToken.oauth_token_secret,
+      createdAt: Date.now(),
+    },
   });
 
+  return {
+    authorizeUrl: authorizeUrl.toString(),
+  };
+}
+
+async function completeFlickrAuth(callbackUrl) {
   if (!callbackUrl) {
     throw new Error('Flickr authorization was cancelled.');
+  }
+
+  const { [STORAGE_KEYS.pendingFlickrAuth]: pending } = await chrome.storage.session.get(
+    STORAGE_KEYS.pendingFlickrAuth
+  );
+  if (!pending || !pending.oauthToken || !pending.oauthTokenSecret) {
+    throw new Error('Flickr authorization session expired. Start the connection again.');
   }
 
   const callbackParams = new URL(callbackUrl).searchParams;
@@ -737,8 +912,17 @@ async function connectFlickr() {
   if (!oauthToken || !oauthVerifier) {
     throw new Error('Flickr did not return an authorization verifier.');
   }
+  if (oauthToken !== pending.oauthToken) {
+    throw new Error('Flickr returned an unexpected authorization token.');
+  }
 
-  const accessToken = await getOAuthAccessToken(settings, requestToken.oauth_token_secret, oauthToken, oauthVerifier);
+  const settings = await getSettings();
+  const accessToken = await getOAuthAccessToken(
+    settings,
+    pending.oauthTokenSecret,
+    oauthToken,
+    oauthVerifier
+  );
   const next = Ext.normalizeSettings({
     ...settings,
     flickrAccessToken: accessToken.oauth_token || '',
@@ -751,6 +935,7 @@ async function connectFlickr() {
   await chrome.storage.local.set({
     [STORAGE_KEYS.settings]: next,
   });
+  await chrome.storage.session.remove(STORAGE_KEYS.pendingFlickrAuth);
 
   return getAuthState(next);
 }
@@ -847,6 +1032,562 @@ async function getFlickrPhotoInfo(photoId, settings) {
   }
 
   return response;
+}
+
+async function getPhotoGroups(photoId, tags = []) {
+  const settings = await getSettings();
+  if (!Ext.hasFlickrAuth(settings)) {
+    throw new Error('Connect Flickr before managing groups.');
+  }
+
+  const normalizedPhotoId = String(photoId || '').trim();
+  if (!normalizedPhotoId) {
+    throw new Error('Missing photo id.');
+  }
+
+  const searchTerms = selectGroupSearchTerms(tags);
+  const [contextsResponse, eligibleResponse, tracking, membershipRequests, discoveredResponses] = await Promise.all([
+    flickrApiRequest('flickr.photos.getAllContexts', {
+      photo_id: normalizedPhotoId,
+    }, settings, { method: 'GET', auth: true }),
+    flickrApiRequest('flickr.groups.pools.getGroups', {
+      page: 1,
+      per_page: 400,
+    }, settings, { method: 'GET', auth: true }),
+    getTrackedGroups(normalizedPhotoId),
+    getGroupMembershipRequests(),
+    Promise.all(searchTerms.map(async (term) => ({
+      term,
+      response: await flickrApiRequest('flickr.groups.search', {
+        text: term,
+        page: 1,
+        per_page: 25,
+      }, settings, { method: 'GET', auth: true }),
+    }))),
+  ]);
+
+  const approved = normalizeCollection(contextsResponse.pool);
+  const eligible = normalizeCollection(eligibleResponse.groups?.group);
+  const approvedIds = new Set(approved.map((group) => groupId(group)).filter(Boolean));
+  const eligibleIds = new Set(eligible.map((group) => groupId(group)).filter(Boolean));
+
+  let membershipRequestsChanged = false;
+  for (const id of new Set([...approvedIds, ...eligibleIds])) {
+    if (membershipRequests[id]) {
+      delete membershipRequests[id];
+      membershipRequestsChanged = true;
+    }
+  }
+  if (membershipRequestsChanged) {
+    await saveGroupMembershipRequests(membershipRequests);
+  }
+
+  const nextTracking = { ...tracking };
+  for (const id of approvedIds) {
+    if (nextTracking[id]) {
+      nextTracking[id] = {
+        ...nextTracking[id],
+        status: 'approved',
+        approvedAt: nextTracking[id].approvedAt || new Date().toISOString(),
+      };
+    }
+  }
+  await saveTrackedGroups(normalizedPhotoId, nextTracking);
+
+  const result = new Map();
+  for (const group of approved) {
+    const id = groupId(group);
+    if (id) {
+      result.set(id, normalizeGroup(group, 'approved', tags));
+    }
+  }
+
+  for (const [id, record] of Object.entries(nextTracking)) {
+    if (!approvedIds.has(id) && record.status === 'pending') {
+      result.set(id, normalizeGroup({ nsid: id, name: record.name || id }, 'pending', tags, record));
+    }
+  }
+
+  for (const group of eligible) {
+    const id = groupId(group);
+    if (!id || result.has(id)) {
+      continue;
+    }
+    const normalized = normalizeGroup(group, 'eligible', tags);
+    if (normalized.score > 0) {
+      normalized.status = 'suggested';
+    }
+    result.set(id, normalized);
+  }
+
+  const discovered = new Map();
+  for (const search of discoveredResponses) {
+    for (const group of normalizeCollection(search.response.groups?.group)) {
+      const id = groupId(group);
+      if (!id || result.has(id)) {
+        continue;
+      }
+      const existing = discovered.get(id) || { group, terms: new Set() };
+      existing.terms.add(search.term);
+      discovered.set(id, existing);
+    }
+  }
+
+  for (const [id, candidate] of discovered.entries()) {
+    const normalized = normalizeGroup(candidate.group, 'discovered', tags);
+    const searchMatches = Array.from(candidate.terms);
+    normalized.matches = Array.from(new Set([...normalized.matches, ...searchMatches]));
+    normalized.score += searchMatches.reduce((score, term) => score + Math.min(term.length, 12), 0);
+    if (membershipRequests[id]) {
+      normalized.status = 'membership-requested';
+      normalized.requestedAt = membershipRequests[id].requestedAt || '';
+    }
+    result.set(id, normalized);
+  }
+
+  const statusOrder = { approved: 0, pending: 1, 'membership-requested': 2, suggested: 3, discovered: 4, eligible: 5 };
+  const groups = Array.from(result.values()).sort((a, b) => {
+    const statusDifference = statusOrder[a.status] - statusOrder[b.status];
+    if (statusDifference !== 0) {
+      return statusDifference;
+    }
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return {
+    items: groups.slice(0, 60),
+    counts: {
+      approved: groups.filter((group) => group.status === 'approved').length,
+      pending: groups.filter((group) => group.status === 'pending').length,
+      invitationRequested: groups.filter((group) => group.status === 'membership-requested').length,
+      suggested: groups.filter((group) => group.status === 'suggested').length,
+      discovered: groups.filter((group) => group.status === 'discovered').length,
+      eligible: eligibleIds.size,
+      totalEligible: eligibleIds.size,
+    },
+    refreshedAt: new Date().toISOString(),
+  };
+}
+
+function selectGroupSearchTerms(tags) {
+  const ignoredTags = genericGroupTags();
+  const sourceTags = Array.isArray(tags) ? tags : String(tags || '').split(',');
+  const terms = [];
+  for (const tag of sourceTags) {
+    const normalized = String(tag || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (normalized.length < 3 || ignoredTags.has(normalized) || terms.includes(normalized)) {
+      continue;
+    }
+    terms.push(normalized);
+    if (terms.length === 3) {
+      break;
+    }
+  }
+  return terms;
+}
+
+async function addPhotoToGroup(photoId, groupIdValue, groupName, tags = []) {
+  const settings = await getSettings();
+  if (!Ext.hasFlickrAuth(settings)) {
+    throw new Error('Connect Flickr before submitting photos to groups.');
+  }
+
+  const normalizedPhotoId = String(photoId || '').trim();
+  const normalizedGroupId = String(groupIdValue || '').trim();
+  if (!normalizedPhotoId || !normalizedGroupId) {
+    throw new Error('Missing photo or group id.');
+  }
+
+  const [groupInfo, photoInfo] = await Promise.all([
+    flickrApiRequest('flickr.groups.getInfo', {
+      group_id: normalizedGroupId,
+    }, settings, { method: 'GET', auth: true }),
+    getFlickrPhotoInfo(normalizedPhotoId, settings),
+  ]);
+  const restrictionMessage = groupSubmissionRestrictionMessage(
+    groupInfo?.group || {},
+    photoInfo?.photo || {},
+    groupName || normalizedGroupId
+  );
+  if (restrictionMessage) {
+    throw new Error(restrictionMessage);
+  }
+
+  // Treat a successful submission as pending until getAllContexts confirms it is visible.
+  let status = 'pending';
+  try {
+    await flickrApiRequest('flickr.groups.pools.add', {
+      photo_id: normalizedPhotoId,
+      group_id: normalizedGroupId,
+    }, settings, { method: 'POST', auth: true });
+  } catch (error) {
+    const code = Number(error?.code || 0);
+    if (code === 6 || code === 7 || /pending queue/i.test(String(error?.message || ''))) {
+      status = 'pending';
+    } else if (code === 3 || /already in pool/i.test(String(error?.message || ''))) {
+      status = 'approved';
+    } else {
+      throw new Error(groupPoolErrorMessage(error, groupName || normalizedGroupId));
+    }
+  }
+
+  const tracking = await getTrackedGroups(normalizedPhotoId);
+  tracking[normalizedGroupId] = {
+    groupId: normalizedGroupId,
+    name: String(groupName || normalizedGroupId),
+    status,
+    submittedAt: new Date().toISOString(),
+  };
+  await saveTrackedGroups(normalizedPhotoId, tracking);
+  return getPhotoGroups(normalizedPhotoId, tags);
+}
+
+function groupSubmissionRestrictionMessage(group, photo, groupName) {
+  const restrictions = group?.restrictions || {};
+  const violations = [];
+  const media = String(photo?.media || 'photo').toLowerCase();
+  const contentType = Number(photo?.content_type || 1);
+  const safetyLevel = Number(photo?.safety_level || 1);
+  const isExplicitlyDisallowed = (key) => Object.prototype.hasOwnProperty.call(restrictions, key)
+    && Number(restrictions[key]) === 0;
+
+  if (media === 'video' && isExplicitlyDisallowed('videos_ok')) {
+    violations.push('This group does not allow videos.');
+  } else if (media !== 'video' && isExplicitlyDisallowed('photos_ok')) {
+    violations.push('This group does not allow photos.');
+  }
+
+  const contentRestriction = {
+    1: ['images_ok', 'photographic images'],
+    2: ['screens_ok', 'screenshots'],
+    3: ['art_ok', 'art or illustrations'],
+  }[contentType];
+  if (contentRestriction && isExplicitlyDisallowed(contentRestriction[0])) {
+    violations.push(`This group does not allow ${contentRestriction[1]}.`);
+  }
+
+  const safetyRestriction = {
+    1: ['safe_ok', 'safe content'],
+    2: ['moderate_ok', 'moderate content'],
+    3: ['restricted_ok', 'restricted content'],
+  }[safetyLevel];
+  if (safetyRestriction && isExplicitlyDisallowed(safetyRestriction[0])) {
+    violations.push(`This group does not allow ${safetyRestriction[1]}.`);
+  }
+
+  const requiresGeo = Number(restrictions.has_geo || 0) === 1;
+  const location = photo?.location;
+  const hasGeo = Boolean(
+    location
+    && typeof location === 'object'
+    && String(location.latitude ?? '').trim()
+    && String(location.longitude ?? '').trim()
+  );
+
+  if (requiresGeo && !hasGeo) {
+    violations.push('This group only allows geotagged items. Add a location to this photo on Flickr before submitting it.');
+  }
+
+  return violations.length ? `${groupName}: ${violations.join(' ')}` : '';
+}
+
+function groupPoolErrorMessage(error, groupName) {
+  const name = String(groupName || 'This group');
+  const messages = {
+    1: 'Flickr could not find this photo or the connected account does not own it.',
+    2: `The connected account cannot access ${name} or is not currently a member. Refresh groups and join it first.`,
+    4: 'This photo is already in the maximum number of Flickr group pools. Remove it from another group before trying again.',
+    5: `${name} has reached its per-member photo limit. Try again after the group's posting interval resets.`,
+    8: `${name} rejected this photo because its media type, content type, safety level, geotag, or another group rule is not allowed.`,
+    10: `${name}'s photo pool is full and cannot accept more photos.`,
+    11: `${name}'s administrators have disabled submissions to the group pool.`,
+    95: 'Flickr requires a secure connection for this request. Update the extension before retrying.',
+    96: 'Flickr rejected the request signature. Verify the Flickr API secret and reconnect the account.',
+    97: 'The Flickr request signature was missing. Reconnect Flickr and try again.',
+    98: 'The Flickr access token is invalid or expired. Reconnect Flickr in Options.',
+    99: 'The connected Flickr account does not have permission to perform this action. Reconnect it with write access.',
+    100: 'The configured Flickr API key is invalid or expired. Verify it in Options.',
+    105: 'Flickr is temporarily unavailable. Try again later.',
+    106: 'Flickr could not complete the write operation. Try again later.',
+    111: 'Flickr rejected the response format requested by this extension.',
+    112: 'Flickr does not recognize the group submission API method. Update the extension and try again.',
+    114: 'Flickr could not parse the request envelope.',
+    115: 'Flickr could not parse the group submission request.',
+    116: 'Flickr rejected a request value under its URL-abuse protection rules.',
+  };
+  const code = Number(error?.code || 0);
+  return messages[code] || String(error?.message || 'Flickr rejected the group submission.');
+}
+
+async function getGroupJoinInfo(groupIdValue) {
+  const settings = await getSettings();
+  if (!Ext.hasFlickrAuth(settings)) {
+    throw new Error('Connect Flickr before joining groups.');
+  }
+
+  const normalizedGroupId = String(groupIdValue || '').trim();
+  if (!normalizedGroupId) {
+    throw new Error('Missing group id.');
+  }
+
+  const response = await flickrApiRequest('flickr.groups.getInfo', {
+    group_id: normalizedGroupId,
+  }, settings, { method: 'GET', auth: true });
+  const group = response?.group || {};
+
+  return {
+    id: normalizedGroupId,
+    name: flickrText(group.name) || normalizedGroupId,
+    description: flickrText(group.description),
+    rules: flickrText(group.rules),
+    privacy: Number(group.privacy || 0),
+  };
+}
+
+async function joinGroup(photoId, groupIdValue, acceptRules, tags = []) {
+  const settings = await getSettings();
+  if (!Ext.hasFlickrAuth(settings)) {
+    throw new Error('Connect Flickr before joining groups.');
+  }
+
+  const normalizedGroupId = String(groupIdValue || '').trim();
+  if (!normalizedGroupId) {
+    throw new Error('Missing group id.');
+  }
+
+  try {
+    await flickrApiRequest('flickr.groups.join', {
+      group_id: normalizedGroupId,
+      ...(acceptRules ? { accept_rules: '1' } : {}),
+    }, settings, { method: 'POST', auth: true });
+  } catch (error) {
+    if (Number(error?.code) !== 4) {
+      if (Number(error?.code) === 5) {
+        return { groups: null, invitationRequired: true };
+      }
+      if (Number(error?.code) === 6) {
+        throw new Error('Flickr requires you to review this group\'s rules. Open the group link, review the rules, then join there.');
+      }
+      throw error;
+    }
+  }
+
+  const membershipRequests = await getGroupMembershipRequests();
+  if (membershipRequests[normalizedGroupId]) {
+    delete membershipRequests[normalizedGroupId];
+    await saveGroupMembershipRequests(membershipRequests);
+  }
+  const groups = await getPhotoGroups(photoId, tags);
+  markGroupMembershipStatus(groups, normalizedGroupId, 'joined');
+  return { groups, invitationRequired: false };
+}
+
+async function requestGroupInvitation(photoId, groupIdValue, invitationMessage, acceptRules, tags = []) {
+  const settings = await getSettings();
+  if (!Ext.hasFlickrAuth(settings)) {
+    throw new Error('Connect Flickr before requesting a group invitation.');
+  }
+
+  const normalizedGroupId = String(groupIdValue || '').trim();
+  const normalizedMessage = String(invitationMessage || '').trim();
+  if (!normalizedGroupId) {
+    throw new Error('Missing group id.');
+  }
+  if (!normalizedMessage) {
+    throw new Error('Write a short message for the group administrators.');
+  }
+
+  try {
+    await flickrApiRequest('flickr.groups.joinRequest', {
+      group_id: normalizedGroupId,
+      message: normalizedMessage,
+      accept_rules: acceptRules ? '1' : '0',
+    }, settings, { method: 'POST', auth: true });
+  } catch (error) {
+    if (Number(error?.code) !== 7) {
+      if (Number(error?.code) === 5) {
+        throw new Error('This group is public. Use Join instead of requesting an invitation.');
+      }
+      if (Number(error?.code) === 6) {
+        throw new Error('Flickr requires acceptance of the group rules before requesting an invitation.');
+      }
+      throw error;
+    }
+  }
+
+  const membershipRequests = await getGroupMembershipRequests();
+  membershipRequests[normalizedGroupId] = {
+    groupId: normalizedGroupId,
+    requestedAt: new Date().toISOString(),
+  };
+  await saveGroupMembershipRequests(membershipRequests);
+
+  const groups = await getPhotoGroups(photoId, tags);
+  markGroupMembershipStatus(groups, normalizedGroupId, 'membership-requested');
+  return { groups, invitationRequested: true };
+}
+
+function markGroupMembershipStatus(groups, groupIdValue, status) {
+  const group = groups?.items?.find((item) => item.id === groupIdValue);
+  if (!group) {
+    return;
+  }
+
+  if (status === 'joined' && group.status === 'discovered') {
+    group.status = group.score > 0 ? 'suggested' : 'eligible';
+    groups.counts.discovered = Math.max(0, Number(groups.counts.discovered || 0) - 1);
+    if (group.status === 'suggested') {
+      groups.counts.suggested = Number(groups.counts.suggested || 0) + 1;
+    }
+    groups.counts.totalEligible = Math.max(Number(groups.counts.totalEligible || 0), 1);
+    return;
+  }
+
+  group.status = status;
+}
+
+async function removePhotoFromGroup(photoId, groupIdValue, tags = []) {
+  const settings = await getSettings();
+  if (!Ext.hasFlickrAuth(settings)) {
+    throw new Error('Connect Flickr before removing photos from groups.');
+  }
+
+  const normalizedPhotoId = String(photoId || '').trim();
+  const normalizedGroupId = String(groupIdValue || '').trim();
+  if (!normalizedPhotoId || !normalizedGroupId) {
+    throw new Error('Missing photo or group id.');
+  }
+
+  await flickrApiRequest('flickr.groups.pools.remove', {
+    photo_id: normalizedPhotoId,
+    group_id: normalizedGroupId,
+  }, settings, { method: 'POST', auth: true });
+
+  const tracking = await getTrackedGroups(normalizedPhotoId);
+  delete tracking[normalizedGroupId];
+  await saveTrackedGroups(normalizedPhotoId, tracking);
+  return getPhotoGroups(normalizedPhotoId, tags);
+}
+
+function normalizeCollection(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return value && typeof value === 'object' ? [value] : [];
+}
+
+function flickrText(value) {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value).trim();
+  }
+  if (value && typeof value === 'object') {
+    return String(value._content || value.text || '').trim();
+  }
+  return '';
+}
+
+function groupId(group) {
+  return String(group?.nsid || group?.id || '').trim();
+}
+
+function normalizeGroup(group, status, tags = [], tracking = null) {
+  const id = groupId(group);
+  const name = String(group?.name || group?.title || tracking?.name || id).trim();
+  const match = scoreGroupName(name, tags);
+  return {
+    id,
+    name,
+    status,
+    score: match.score,
+    matches: match.matches,
+    privacy: Number(group?.privacy || 0),
+    photos: Number(group?.photos || 0),
+    url: `https://www.flickr.com/groups/${encodeURIComponent(id)}/`,
+    submittedAt: tracking?.submittedAt || '',
+  };
+}
+
+function scoreGroupName(name, tags) {
+  const normalizedName = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const nameWords = new Set(normalizedName.split(/\s+/).filter(Boolean));
+  const sourceTags = Array.isArray(tags) ? tags : String(tags || '').split(',');
+  const ignoredTags = genericGroupTags();
+  const matches = [];
+  for (const tag of sourceTags) {
+    const normalizedTag = String(tag || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (normalizedTag.length < 3 || ignoredTags.has(normalizedTag) || matches.includes(normalizedTag)) {
+      continue;
+    }
+
+    const tagWords = normalizedTag.split(/\s+/).filter(Boolean);
+    const isSingleWordMatch = tagWords.length === 1 && wordOrPluralMatches(nameWords, tagWords[0]);
+    const isPhraseMatch = tagWords.length > 1 && (` ${normalizedName} `).includes(` ${normalizedTag} `);
+    if (isSingleWordMatch || isPhraseMatch) {
+      matches.push(normalizedTag);
+    }
+  }
+  return {
+    score: matches.reduce((score, match) => score + Math.min(match.length, 12), 0),
+    matches,
+  };
+}
+
+function genericGroupTags() {
+  return new Set([
+    'animal', 'animals', 'art', 'beautiful', 'close up', 'closeup', 'color', 'creative',
+    'detail', 'details', 'flickr', 'image', 'images', 'nature', 'outdoor', 'outdoors',
+    'photo', 'photography', 'portrait', 'travel', 'wildlife',
+  ]);
+}
+
+function wordOrPluralMatches(nameWords, word) {
+  if (nameWords.has(word)) {
+    return true;
+  }
+  if (word.endsWith('y') && nameWords.has(`${word.slice(0, -1)}ies`)) {
+    return true;
+  }
+  if (nameWords.has(`${word}s`) || nameWords.has(`${word}es`)) {
+    return true;
+  }
+  if (word.endsWith('s') && nameWords.has(word.slice(0, -1))) {
+    return true;
+  }
+  return false;
+}
+
+async function getTrackedGroups(photoId) {
+  const { [STORAGE_KEYS.groupTracking]: allTracking = {} } = await chrome.storage.local.get(
+    STORAGE_KEYS.groupTracking
+  );
+  const tracking = allTracking[String(photoId)] || {};
+  return tracking && typeof tracking === 'object' ? { ...tracking } : {};
+}
+
+async function saveTrackedGroups(photoId, tracking) {
+  const { [STORAGE_KEYS.groupTracking]: allTracking = {} } = await chrome.storage.local.get(
+    STORAGE_KEYS.groupTracking
+  );
+  allTracking[String(photoId)] = tracking;
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.groupTracking]: allTracking,
+  });
+}
+
+async function getGroupMembershipRequests() {
+  const { [STORAGE_KEYS.groupMembershipRequests]: requests = {} } = await chrome.storage.local.get(
+    STORAGE_KEYS.groupMembershipRequests
+  );
+  return requests && typeof requests === 'object' ? { ...requests } : {};
+}
+
+async function saveGroupMembershipRequests(requests) {
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.groupMembershipRequests]: requests,
+  });
 }
 
 function normalizeLiveVisibility(visibility = {}) {
@@ -1116,12 +1857,16 @@ function parseFlickrJsonResponse(text, status) {
 
   if (status >= 400) {
     const message = decoded.message || decoded.error || decoded.stat || `Flickr API request failed with status ${status}.`;
-    throw new Error(String(message));
+    const error = new Error(String(message));
+    error.code = Number(decoded.code || status);
+    throw error;
   }
 
   if (decoded.stat && decoded.stat !== 'ok') {
     const message = decoded.message || `Flickr API request failed with status ${status}.`;
-    throw new Error(String(message));
+    const error = new Error(String(message));
+    error.code = Number(decoded.code || 0);
+    throw error;
   }
 
   return decoded;

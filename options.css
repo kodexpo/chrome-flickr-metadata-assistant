@@ -263,3 +263,11 @@ button.ghost {
     flex-direction: column;
   }
 }
+.auth-action-status {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+}
+
+.auth-action-status.error {
+  color: #c0182f;
+}

@@ -1,10 +1,12 @@
 (function () {
   const DEFAULT_SETTINGS = {
     provider: 'local',
+    draftFidelity: 'balanced',
+    draftTone: 'neutral',
     openaiApiKey: '',
     openaiModel: 'gpt-4.1-mini',
     deepseekApiKey: '',
-    deepseekModel: 'deepseek-v4-flash',
+    deepseekModel: 'deepseek-flash',
     ollamaBaseUrl: 'http://localhost:11434',
     ollamaModel: 'llama3.2-vision',
     preferLocalFirst: true,
@@ -26,12 +28,18 @@
   ]);
 
   function normalizeSettings(input = {}) {
-    return {
+    const settings = {
       ...DEFAULT_SETTINGS,
       ...input,
       provider: normalizeProvider(input.provider),
+      draftFidelity: normalizeDraftFidelity(input.draftFidelity),
+      draftTone: normalizeDraftTone(input.draftTone),
       preferLocalFirst: Boolean(input.preferLocalFirst ?? true),
     };
+    if (!settings.deepseekModel || settings.deepseekModel === 'deepseek-v4-flash') {
+      settings.deepseekModel = 'deepseek-flash';
+    }
+    return settings;
   }
 
   function hasFlickrAuth(settings = {}) {
@@ -47,6 +55,16 @@
   function normalizeProvider(provider) {
     const value = String(provider || '').trim().toLowerCase();
     return ['auto', 'local', 'openai', 'deepseek', 'heuristic'].includes(value) ? value : 'local';
+  }
+
+  function normalizeDraftFidelity(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ['literal', 'balanced', 'expressive'].includes(normalized) ? normalized : 'balanced';
+  }
+
+  function normalizeDraftTone(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ['neutral', 'warm', 'playful', 'documentary', 'poetic'].includes(normalized) ? normalized : 'neutral';
   }
 
   function extractPhotoId(url) {
@@ -192,9 +210,18 @@
     const title = preferDraftText(draft.title, context.currentTitle, base.title);
     const description = preferDraftText(draft.description, context.currentDescription || context.description, base.description);
     const notes = String(draft.notes || '').trim();
-    const confidence = ['low', 'medium', 'high'].includes(String(draft.confidence || '').trim())
-      ? String(draft.confidence).trim()
+    const confidenceValue = String(draft.confidence || '').trim().toLowerCase();
+    let confidence = ['low', 'medium', 'high'].includes(confidenceValue)
+      ? confidenceValue
       : base.confidence;
+
+    if (typeof draft.confidence === 'number' && Number.isFinite(draft.confidence)) {
+      confidence = draft.confidence >= 0.8
+        ? 'high'
+        : draft.confidence >= 0.5
+          ? 'medium'
+          : 'low';
+    }
     const tags = preferExistingTags(context.currentTags, draft.tags, base.tags);
     const defaultNotes = {
       local: 'Local vision draft.',
@@ -296,9 +323,25 @@
       .replace(/'/g, '&#39;');
   }
 
-  function buildTextPrompt(context = {}) {
+  function buildTextPrompt(context = {}, settings = {}) {
+    const fidelity = normalizeDraftFidelity(settings.draftFidelity);
+    const tone = normalizeDraftTone(settings.draftTone);
+    const fidelityInstructions = {
+      literal: 'Be strictly literal. Mention only clearly visible subjects, actions, colors, and setting details. Do not infer mood, intent, story, or symbolism.',
+      balanced: 'Be visually faithful while allowing restrained, natural phrasing. Do not invent unseen facts, location, intent, or backstory.',
+      expressive: 'Use more vivid and characterful phrasing, while keeping every concrete claim grounded in what is visibly present.',
+    };
+    const toneInstructions = {
+      neutral: 'Use a clear, natural, neutral tone.',
+      warm: 'Use a warm, friendly tone without becoming sentimental.',
+      playful: 'Use a light, playful tone and gentle humor when the image supports it.',
+      documentary: 'Use a precise, observational, documentary tone.',
+      poetic: 'Use elegant, evocative language, but keep the description concise and visually accurate.',
+    };
     return [
       'Create Flickr metadata for the attached image.',
+      fidelityInstructions[fidelity],
+      toneInstructions[tone],
       'Keep the title short and natural.',
       'Write a one- or two-sentence description that is concrete and faithful.',
       'Return 6-18 relevant tags, lower-case when reasonable, no duplicates, no location tags.',
@@ -311,6 +354,8 @@
         photoId: context.photoId || '',
         imageUrl: context.imageUrl || '',
         visibility: context.visibility || '',
+        requestedFidelity: fidelity,
+        requestedTone: tone,
       }),
     ].join('\n');
   }

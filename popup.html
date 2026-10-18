@@ -63,6 +63,21 @@
       </div>
     </section>
 
+    <section class="panel groups-panel">
+      <div class="groups-heading">
+        <div>
+          <span class="section-label">Groups</span>
+          <p id="groupsSummary" class="muted">Refresh to inspect this photo's groups.</p>
+        </div>
+        <div class="groups-heading-actions">
+          <button id="groupsToggleEligibleBtn" class="hidden" type="button">Show all eligible</button>
+          <button id="groupsRefreshBtn" type="button">Refresh groups</button>
+        </div>
+      </div>
+      <p id="groupsFeedback" class="groups-feedback hidden" role="alert"></p>
+      <div id="groupsList" class="groups-list" aria-live="polite"></div>
+    </section>
+
     <section class="actions">
       <button id="refreshBtn" type="button">Load page</button>
       <button id="draftBtn" type="button" class="primary">Generate draft</button>
@@ -72,6 +87,27 @@
 
     <p id="footerText" class="footer muted"></p>
   </main>
+
+  <dialog id="groupJoinDialog" class="join-dialog">
+    <form method="dialog">
+      <span class="section-label">Join Flickr group</span>
+      <h2 id="groupJoinTitle">Join group?</h2>
+      <p id="groupJoinDescription" class="muted"></p>
+      <section id="groupJoinRulesWrap" class="join-rules hidden">
+        <strong>Group rules</strong>
+        <p id="groupJoinRules"></p>
+      </section>
+      <label id="groupInvitationMessageWrap" class="invitation-message hidden">
+        <span>Message to group administrators</span>
+        <textarea id="groupInvitationMessage" rows="4" maxlength="1000" placeholder="Hello, I would like to join this group and share relevant photos."></textarea>
+      </label>
+      <p id="groupJoinNotice" class="muted"></p>
+      <div class="join-dialog-actions">
+        <button id="groupJoinCancelBtn" type="button">Cancel</button>
+        <button id="groupJoinConfirmBtn" class="primary" type="button">Join group</button>
+      </div>
+    </form>
+  </dialog>
   <script src="common.js"></script>
   <script src="popup.js"></script>
 </body>
